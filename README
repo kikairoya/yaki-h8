@@ -1,0 +1,15 @@
+yaki-h8: h8 flash writer
+
+this software is licensed by Boost Software License (v1 or later).
+
+usage: yaki-h8 [opts...] {file}
+ file:         S-record file to transfer
+ options:
+  -p PORT      specify serial port
+  -s BAUDRATE  specify initial hand-shake speed
+  -c CLOCK     specify target system clock freq
+  -t BAUDRATE  specify data transfer speed
+  -h           print this message
+
+
+supported target: H8/3687F (other H8/300H Tiny will be work with a few hack to stub-tiny.x)
