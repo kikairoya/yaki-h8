@@ -61,9 +61,10 @@ struct BIT {
 #define PCR1 (*(volatile unsigned char *)0xFFE4)
 #define PCR2 (*(volatile unsigned char *)0xFFE5)
 
-extern unsigned char wbuf[256];
+extern unsigned char wbuf[128];
 extern unsigned char rbuf[128];
 extern unsigned char abuf[128];
+extern volatile unsigned char *target;
 #if 1
 #define STR_1(x) #x
 #define STR(x) STR_1(x)
@@ -147,7 +148,7 @@ inline void sendb(int c) {
 	TDR = c;
 }
 int fill_buf() {
-	for (int n=0; n<256; ++n) {
+	for (int n=0; n<128; ++n) {
 		int c = recvb();
 		if (c==EOF) return EOF;
 		wbuf[n] = c;
@@ -155,9 +156,7 @@ int fill_buf() {
 	return 0;
 }
 
-void pulse(volatile unsigned char *target, const unsigned char *source, int usec) {
-	for (int i=0; i<128; ++i) target[i] = source[i];
-
+void pulse(int usec) {
 	TMWD = 0xFF;
 	TCSRWD = 0x50;
 	TCWD = 0xF0;
@@ -175,27 +174,38 @@ void pulse(volatile unsigned char *target, const unsigned char *source, int usec
 	TCSRWD = 0x52;
 }
 
-bool flash(volatile unsigned char *target, const unsigned char *source) {
+
+bool verify() {
+	PV = 1;
+	usleep(4);
+	bool matched = true;
+	for (int i=0; i<128; ++i, ++i) {
+		target[i] = 0xFF;
+		usleep_inline(2);
+		unsigned short t = *(unsigned short *)&target[i];
+		if (*(unsigned short *)&wbuf[i]!=t) matched = false;
+		*(unsigned short *)&abuf[i] = *(unsigned short *)&rbuf[i] | t;
+		*(unsigned short *)&rbuf[i] = *(unsigned short *)&wbuf[i] | ~t;
+	}
+	PV = 0;
+	usleep(2);
+	return matched;
+}
+
+bool flash() {
 	SWE = 1;
 	usleep(2);
-	for (int i=0; i<128; ++i) rbuf[i] = source[i];
+	for (int i=0; i<128; ++i) rbuf[i] = wbuf[i];
 	int n;
 	for (n=0; n<1000; ++n) {
-		pulse(target, rbuf, n<6?30:200);
-		PV = 1;
-		usleep(4);
-		bool matched = true;
-		for (int i=0; i<128; ++i) {
-			target[i] = 0xFF;
-			usleep_inline(2);
-			unsigned char t = target[i];
-			abuf[i] = rbuf[i] | t;
-			rbuf[i] = source[i] | ~t;
-			if (source[i]!=t) matched = false;
+		for (int i=0; i<128; ++i) target[i] = rbuf[i];
+		pulse(n<6?30:200);
+		const bool matched = verify();
+
+		if (n<6) {
+			for (int i=0; i<128; ++i) target[i] = abuf[i];
+			pulse(10);
 		}
-		PV = 0;
-		usleep(2);
-		if (n<6) pulse(target, abuf, 10);
 		if (matched) break;
 	}
 	SWE = 0;
@@ -208,7 +218,6 @@ int main() {
 	RE = 1;
 	FLSHE = 1;
 	usleep(400);
-	volatile unsigned char *target = 0;
 	sendb('B');
 	if (1) {
 		int brr = recvb(); // new BRR
@@ -221,15 +230,15 @@ int main() {
 		usleep(400);
 		sendb('S'); // START
 	}
-	const unsigned count = recvb(); // bytes/256
-	if ((int)count<0) goto ERROR;
-	for (unsigned n=0; n<count; ++n) {
+	recvb();
+	unsigned long count_ = static_cast<unsigned long>(recvb()) << 24;
+	count_ |= static_cast<unsigned long>(recvb())<<16;
+	count_ |= static_cast<unsigned long>(recvb())<<8;
+	const unsigned char *const limit = reinterpret_cast<unsigned char *>(count_);
+	for (target = 0; target<limit; target += 128) {
 		sendb('A'); // ACK
 		if (fill_buf()) goto ERROR;
-		if (!flash(target, &wbuf[  0])) { sendb('V'); goto ERROR; }
-		target += 128;
-		if (!flash(target, &wbuf[128])) { sendb('v'); goto ERROR; }
-		target += 128;
+		if (!flash()) goto ERROR;
 		if (FLER) goto ERROR;
 	}
 	sendb('F'); // FINISH
@@ -238,6 +247,7 @@ ERROR:
 	sendb('E'); // ERROR
 	return 0;
 }
-unsigned char wbuf[256];
-unsigned char rbuf[128];
 unsigned char abuf[128];
+unsigned char rbuf[128];
+unsigned char wbuf[128];
+volatile unsigned char *target;

@@ -9,7 +9,10 @@
 #include <cstring>
 #include <iomanip>
 #include <map>
+#include <array>
 #include <cmath>
+
+#define GNUC_VER ((__GNUC__*10000L) + (__GNUC_MINOR__*100L) + (__GNUC_PATCHLEVEL__*1L))
 
 #ifdef _MSC_VER
 #if _MSC_VER >= 1600
@@ -19,7 +22,7 @@
 #endif
 
 #ifdef __GNUC__
-#if (__GNUC__ >= 4) && (__GNUC_MINOR__>=6) && defined(__GXX_EXPERIMENTAL_CXX0X__)
+#if (GNUC_VER >= 40600) && defined(__GXX_EXPERIMENTAL_CXX0X__)
 // GCC 4.6+ with -std=c++0x has nullptr
 #define HAS_NATIVE_NULLPTR
 #endif
@@ -140,195 +143,7 @@ std::basic_istream<charT, Traits> &operator >>(std::basic_istream<charT, Traits>
 	return is;
 }
 
-class serial {
-public:
-	serial(const std::string &name, int speed = -1);
-	~serial();
-	void set_speed(int speed);
-	bool readable();
-	serial &read(void *buf, std::streamsize n);
-	serial &write(const void *buf, std::streamsize n);
-private:
-	serial(const serial &);
-	serial &operator =(const serial &);
-	void *data;
-};
-void msleep(unsigned long msec);
-
-#if defined(_WIN32)
-#define IOS_BINMODE std::ios_base::binary
-#include <windows.h>
-std::map<serial *, int> serial_peek_buffer;
-void msleep(unsigned long msec) { Sleep(msec); }
-serial::serial(const std::string &name, int speed) {
-	data = CreateFile(name.c_str(), GENERIC_READ|GENERIC_WRITE, 0, 0, OPEN_EXISTING, 0, 0);
-	if (!data || data==INVALID_HANDLE_VALUE) throw std::runtime_error("cannot open port '" + name + "'");
-	set_speed(speed);
-	serial_peek_buffer[this] = EOF;
-}
-serial::~serial() {
-	serial_peek_buffer.erase(this);
-	CloseHandle(data);
-}
-void serial::set_speed(int speed) {
-	if (speed<0) speed = 9600;
-	DCB dcb;
-	dcb.DCBlength = sizeof(dcb);
-	dcb.BaudRate = speed;
-	dcb.fBinary = TRUE;
-	dcb.fParity = FALSE;
-	dcb.fOutxCtsFlow = FALSE;
-	dcb.fOutxDsrFlow = FALSE;
-	dcb.fDtrControl = DTR_CONTROL_DISABLE;
-	dcb.fDsrSensitivity = FALSE;
-	dcb.fTXContinueOnXoff = TRUE;
-	dcb.fOutX = FALSE;
-	dcb.fInX = FALSE;
-	dcb.fErrorChar = FALSE;
-	dcb.fNull = FALSE;
-	dcb.fRtsControl = RTS_CONTROL_DISABLE;
-	dcb.fAbortOnError = FALSE;
-	dcb.wReserved = 0;
-	dcb.XonLim = 0;
-	dcb.XoffLim = 0;
-	dcb.ByteSize = 8;
-	dcb.Parity = NOPARITY;
-	dcb.StopBits = ONESTOPBIT;
-	SetCommState(data, &dcb);
-}
-bool serial::readable() {
-	if (serial_peek_buffer[this]!=EOF) return true;
-	COMMTIMEOUTS ts;
-	GetCommTimeouts(data, &ts);
-	COMMTIMEOUTS to = { MAXDWORD, 0, 0, 0, 0 };
-	SetCommTimeouts(data, &to);
-	DWORD dw=0;
-	char c;
-	if (ReadFile(data, &c, 1, &dw, 0) && dw) serial_peek_buffer[this] = c;
-	SetCommTimeouts(data, &ts);
-	return serial_peek_buffer[this]!=EOF;
-}
-serial &serial::read(void *buf, std::streamsize n) {
-	DWORD dw;
-	unsigned char *p = static_cast<unsigned char *>(buf);
-	{
-		int &c = serial_peek_buffer[this];
-		if (c!=EOF) {
-			*p++ = c;
-			--n;
-			c = EOF;
-		}
-	}
-	while (n) {
-		ReadFile(data, p, n, &dw, 0);
-		p += dw;
-		n -= dw;
-	}
-	return *this;
-}
-serial &serial::write(const void *buf, std::streamsize n) {
-	DWORD dw;
-	const unsigned char *p = static_cast<const unsigned char *>(buf);
-	while (n) {
-		WriteFile(data, p, n, &dw, 0);
-		p += dw;
-		n -= dw;
-	}
-	return *this;
-}
-#else
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <time.h>
-#include <poll.h>
-#include <termios.h>
-#define IOS_BINMODE 0
-void msleep(unsigned long msec) {
-	timespec ts = { 0, msec*1000*1000 };
-	nanosleep(&ts, 0);
-}
-serial::serial(const std::string &name, int speed) {
-	const int fd = open(name.c_str(), O_RDWR);
-	data = reinterpret_cast<void *>(fd);
-	if (fd==-1) throw std::runtime_error("cannot open port '" + name + "'");
-	set_speed(speed);
-	struct termios st;
-	tcgetattr(fd, &st);
-	cfmakeraw(&st);
-	tcsetattr(fd, TCSAFLUSH, &st);
-}
-serial::~serial() {
-	close(static_cast<int>(reinterpret_cast<intptr_t>(data)));
-}
-void serial::set_speed(int speed) {
-#define CASE_(x) case x: speed = B##x; break;
-	switch (speed) {
-		CASE_(0);
-		CASE_(50);
-		CASE_(75);
-		CASE_(110);
-		CASE_(134);
-		CASE_(150);
-		CASE_(200);
-		CASE_(300);
-		CASE_(600);
-		CASE_(1200);
-		CASE_(2400);
-		CASE_(4800);
-		CASE_(9600);
-		CASE_(19200);
-		CASE_(38400);
-		CASE_(57600);
-		CASE_(115200);
-		CASE_(230400);
-	default:
-		return;
-	}
-#undef CASE_
-	struct termios st;
-	const int fd = static_cast<int>(reinterpret_cast<intptr_t>(data));
-	tcgetattr(fd, &st);
-	cfsetispeed(&st, speed);
-	cfsetospeed(&st, speed);
-	tcsetattr(fd, TCSAFLUSH, &st);
-}
-bool serial::readable() {
-	pollfd pf = { static_cast<int>(reinterpret_cast<intptr_t>(data)), POLLIN, 0 };
-	poll(&pf, 1, 0);
-	return !!(pf.revents&POLLIN);
-}
-serial &serial::read(void *buf, std::streamsize n) {
-	unsigned char *p = static_cast<unsigned char *>(buf);
-	const int fd = static_cast<int>(reinterpret_cast<intptr_t>(data));
-	while (n) {
-		int r = ::read(fd, p, n);
-		p += r;
-		n -= r;
-	}
-	return *this;
-}
-serial &serial::write(const void *buf, std::streamsize n) {
-	const unsigned char *p = static_cast<const unsigned char *>(buf);
-	const int fd = static_cast<int>(reinterpret_cast<intptr_t>(data));
-	while (n) {
-		int r = ::write(fd, p, n);
-		p += r;
-		n -= r;
-	}
-	return *this;
-}
-
-#endif
-
-#if defined(WIN32) || defined(_WIN32) || defined(__WIN32) || defined(__CYGWIN__)
-#define TINY_STUB_BEGIN binary_stub_tiny_bin_start
-#define TINY_STUB_END binary_stub_tiny_bin_end
-#else
-#define TINY_STUB_BEGIN _binary_stub_tiny_bin_start
-#define TINY_STUB_END _binary_stub_tiny_bin_end
-#endif
+#include "serial.hpp"
 
 using namespace std;
 
@@ -364,8 +179,65 @@ int check_error(unsigned char c, unsigned char expect) {
 	}
 	return 0;
 }
+
+vector<unsigned char> load_loader(const string &loader_file) {
+	ifstream f(("stub-"+loader_file+".bin").c_str(), ios::binary);
+	if (!f.is_open()) throw runtime_error("can't open stub file <" + loader_file + ">");
+	f.seekg(0, ios::end);
+	const auto len = f.tellg();
+	vector<unsigned char> r(len, 0);
+	f.seekg(0, ios::beg);
+	f.read(reinterpret_cast<char *>(&r[0]), len);
+	cout << " stub-" << loader_file << ".bin(" << r.size() << "B)" << flush;
+	return r;
+}
+
+uint32_t load_srec(const string &name, vector<s_record_line> &srec) {
+	ifstream ifs(name.c_str());
+	if (!ifs.is_open()) throw runtime_error("can't open rom file <" + name + ">");
+	uint32_t last = 0;
+	while (ifs) {
+		s_record_line line;
+		ifs >> line;
+		last = max<uint32_t>(last, line.load_addr+line.data.size());
+		srec.push_back(move(line));
+	}
+	last += 0xFF;
+	last &=~0xFF;
+	return last;
+}
+
+struct copy_srec_line {
+	copy_srec_line(vector<unsigned char> &romdata): romdata(romdata) { }
+	void operator ()(const s_record_line &line) {
+		switch (line.record_type) {
+		case s_record_line::header_record:
+			cout << "file: " << string(line.data.cbegin(), line.data.cend()) << " (" << romdata.size()/1024 << "KiB)"<< endl;
+			break;
+		case s_record_line::data_16bit_addr:
+		case s_record_line::data_24bit_addr:
+		case s_record_line::data_32bit_addr:
+			copy(line.data.cbegin(), line.data.cend(), romdata.begin()+line.load_addr);
+			break;
+		default:
+			break;
+		}
+	}
+	vector<unsigned char> &romdata;
+};
+
+vector<unsigned char> load_romimage(const string &mot_name) {
+	vector<s_record_line> srec;
+	const auto last_addr = load_srec(mot_name, srec);
+	vector<unsigned char> romdata(last_addr, 0xFF);
+	for_each(srec.cbegin(), srec.cend(), copy_srec_line(romdata));
+	return romdata;
+}
+
 int main(int argc, char **argv) try {
-	string mot_name, port_name("COM1");
+	string mot_name;
+	string port_name("COM1");
+	string loader_file;
 	int init_speed = 9600;
 	int alt_speed = 0;
 	double target_clock = 20.0;
@@ -384,6 +256,7 @@ int main(int argc, char **argv) try {
 				case 's': init_speed = strtoul(get_option_arg(argc, argv).c_str(), nullptr, 10); continue;
 				case 'c': target_clock = strtod(get_option_arg(argc, argv).c_str(), nullptr); continue;
 				case 't': alt_speed = strtoul(get_option_arg(argc, argv).c_str(), nullptr, 10); continue;
+				case 'l': loader_file = get_option_arg(argc, argv); continue;
 				}
 			}
 			cerr << "unknown option: '" << arg << "'\n";
@@ -396,115 +269,69 @@ int main(int argc, char **argv) try {
 		cerr << "target file must be set\n";
 		return 1;
 	}
-	ifstream mot_file(mot_name.c_str());
-	if (!mot_file.is_open()) {
-		cerr << "target file cannot open '" << mot_name << "'\n";
-		return 1;
-	}
-	
+
+
 	serial ser(port_name, init_speed);
+	const vector<unsigned char> romdata(load_romimage(mot_name.c_str()));
 	{
 		cout << "synchronizing" << flush;
-		const vector<unsigned char> zeroes(256, 0);
+		const array<unsigned char, 256> zeroes = {{}};
 		unsigned n;
 		const unsigned rep = static_cast<unsigned>(-1);
 		for (n=0; n<rep; ++n) {
-			if (n%16==0) cout << '.' << flush;
+			cout << '.' << flush;
 			ser.write(zeroes.data(), sizeof(zeroes));
 			if (ser.readable()) break;
 		}
-		unsigned char c = 0x55;
-		ser.read(&c, 1);
-		if (c!=0) {
+		if (n == rep) {
+			cerr << "not responce from target.\n";
+			return 2;
+		}
+		if (const auto c = ser.read_value<char>()) {
 			cerr << "invalid response '0x" << hex << setw(2) << setprecision(2) << setfill('0') << uppercase << (unsigned)c << "' (should be 0x00)\n";
 			return 3;
 		}
 		cout << " done." << endl;
 	} {
 		cout << "erasing..." << flush;
-		ser.write("\x55", 1);
-		char c = 0x55;
-		ser.read(&c, 1);
-		if (int r = check_error(c, 0xAA)) return r;
+		ser.write_value<char>(0x55);
+		if (const int r = check_error(ser.read_value<char>(), 0xAA)) return r;
 		cout << " done." << endl;
 	} {
-		extern unsigned char TINY_STUB_BEGIN[];
-		extern unsigned char TINY_STUB_END[];
 		cout << "sending stub file" << flush;
-		const vector<unsigned char> stub(TINY_STUB_BEGIN, TINY_STUB_END);
-		const unsigned len = stub.size();
-		unsigned char lb[2] = { (unsigned char)(len>>8), (unsigned char)(len) };
-		ser.write(lb, 2);
+		const vector<unsigned char> stub(load_loader(loader_file));
+		ser.write_value(ser.hton(static_cast<uint16_t>(stub.size())));
 		cout << '.' << flush;
-		ser.read(lb, 2);
-		int n = 0;
-		const auto end = stub.cend();
-		for (auto ite = stub.cbegin(); ite!=end; ++ite) {
-			unsigned char c = *ite;
+		ser.read_value<uint16_t>();
+		unsigned n = 0;
+		for_each(stub.cbegin(), stub.cend(), [&n, &ser](const unsigned char c) {
 			if (++n%16==0) cout << '.' << flush;
-			ser.write(&c, 1);
-			ser.read(&c, 1);
-		};
-		char c = 0x55;
-		ser.read(&c, 1);
-		if (int r = check_error(c, 0xAA)) return r;
+			ser.write_value(c);
+			ser.read_value<unsigned char>();
+		});
+		if (const int r = check_error(ser.read_value<char>(), 0xAA)) return r;
 		cout << "done." << endl;
-	}
-	
-	vector<s_record_line> srec;
-	size_t last_addr = 0;
-	{
-		while (mot_file) {
-			s_record_line line;
-			mot_file >> line;
-			last_addr = max<size_t>(last_addr, line.load_addr+line.data.size());
-			srec.push_back(move(line));
-		}
-	}
-	last_addr = (last_addr+0xFF)&~0xFF;
-	vector<unsigned char> romdata(last_addr, 0xFF);
-	{
-		const auto ptr = romdata.begin();
-		auto ite = srec.cbegin();
-		const auto end = srec.cend();
-		for (; ite!=end; ++ite) {
-			switch (ite->record_type) {
-			case s_record_line::header_record:
-				cout << "file: " << string(ite->data.cbegin(), ite->data.cend()) << " (" << romdata.size()/1024 << "KiB)"<< endl;
-				continue;
-			case s_record_line::data_16bit_addr:
-			case s_record_line::data_24bit_addr:
-			case s_record_line::data_32bit_addr:
-				break;
-			default:
-				continue;
-			}
-			copy(ite->data.cbegin(), ite->data.cend(), ptr+ite->load_addr);
-		}
 	} {
 		cout << "writing" << flush;
-		unsigned char c = 0xFF;
-		ser.read(&c, 1);
-		if (int r = check_error(c, 'B')) return r;
-		
+		if (const int r = check_error(ser.read_value<char>(), 'B')) return r;
+		cout << '.' << flush;
+
 		const int baud = alt_speed ? alt_speed : init_speed;
-		c = static_cast<char>(round(target_clock / 32 / baud * 1000000 - 1));
-		ser.write(&c, 1);
+		ser.write_value(static_cast<unsigned char>(round(target_clock / 32 / baud * 1000000 - 1)));
 		ser.set_speed(baud);
-		ser.read(&c, 1);
-		if (int r = check_error(c, 'S')) return r;
+		if (const int r = check_error(ser.read_value<char>(), 'S')) return r;
+		cout << '.' << flush;
 		
-		const unsigned m = romdata.size()/256;
-		c = m&0xFF;
-		ser.write(&c, 1);
-		for (unsigned n=0; n<m; ++n) {
+		const uint32_t m = romdata.size()>>8;
+		ser.write_value(ser.hton(m));
+		for (uint32_t n=0; n<m; ++n) {
+			if (int r = check_error(ser.read_value<char>(), 'A')) return r;
 			cout << '.' << flush;
-			ser.read(&c, 1);
-			if (int r = check_error(c, 'A')) return r;
-			ser.write(&romdata[n*256], 256);
+			ser.write(&romdata[n*256], 128);
+			if (int r = check_error(ser.read_value<char>(), 'A')) return r;
+			ser.write(&romdata[n*256+128], 128);
 		}
-		ser.read(&c, 1);
-		if (int r = check_error(c, 'F')) return r;
+		if (int r = check_error(ser.read_value<char>(), 'F')) return r;
 		cout << "done." << endl;
 	}
 	cout << "finish." << endl;
