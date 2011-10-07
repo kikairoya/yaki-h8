@@ -5,6 +5,12 @@
 #include <time.h>
 #include <poll.h>
 #include <termios.h>
+#include <time.h>
+
+void msleep(unsigned msec) {
+	timespec t = { 0, (long)msec * 1000000 };
+	nanosleep(&t, 0);
+}
 
 serial::serial(const std::string &name, int speed) {
 	const int fd = open(name.c_str(), O_RDWR);
@@ -41,7 +47,7 @@ void serial::set_speed(int speed) {
 		CASE_(115200);
 		CASE_(230400);
 	default:
-		return;
+		throw std::runtime_error("invalid speed");
 	}
 #undef CASE_
 	struct termios st;

@@ -180,7 +180,11 @@ int check_error(unsigned char c, unsigned char expect) {
 	return 0;
 }
 
+#include "stub-h8tiny.dat"
+
 vector<unsigned char> load_loader(const string &loader_file) {
+	if (loader_file == "tiny") return vector<unsigned char>(stub_h8tiny, stub_h8tiny+sizeof(stub_h8tiny));
+	throw runtime_error("cant find stub <" + loader_file + ">");
 	ifstream f(("stub-"+loader_file+".bin").c_str(), ios::binary);
 	if (!f.is_open()) throw runtime_error("can't open stub file <" + loader_file + ">");
 	f.seekg(0, ios::end);
@@ -316,10 +320,19 @@ int main(int argc, char **argv) try {
 		if (const int r = check_error(ser.read_value<char>(), 'B')) return r;
 		cout << '.' << flush;
 
+		msleep(500);
 		const int baud = alt_speed ? alt_speed : init_speed;
 		ser.write_value(static_cast<unsigned char>(round(target_clock / 32 / baud * 1000000 - 1)));
+		msleep(500);
 		ser.set_speed(baud);
-		if (const int r = check_error(ser.read_value<char>(), 'S')) return r;
+		while (ser.read_value<char>() != 'S') ;
+		ser.write_value('s');
+
+		{
+			char c;
+			while ((c = ser.read_value<char>()) == 'S') ;
+			if (int r = check_error(c, 'T')) return r;
+		}
 		cout << '.' << flush;
 		
 		const uint32_t m = romdata.size()>>8;

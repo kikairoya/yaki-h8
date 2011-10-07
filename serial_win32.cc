@@ -3,6 +3,8 @@
 #include <stdexcept>
 #include <windows.h>
 
+void msleep(unsigned msec) { Sleep(msec); }
+
 std::map<serial *, int> serial_peek_buffer;
 serial::serial(const std::string &name, int speed) {
 	data = CreateFile(name.c_str(), GENERIC_READ|GENERIC_WRITE, 0, 0, OPEN_EXISTING, 0, 0);

@@ -53,11 +53,18 @@ endif
 CC=$(BUILD)gcc
 CXX=$(BUILD)g++
 LINK=$(BUILD)g++
+CXX_FOR_BUILD=g++
 
 .PHONY: all stub yaki-h8 clean
 
-all: yaki-h8$(EXEEXT) stubs
-stubs: stub-h8tiny.o stub-h8s.o stub-h8stiny.o
+all: stubs yaki-h8$(EXEEXT)
+stubs: stub-h8tiny.dat
+
+bintoc$(EXEEXT): bintoc.cc
+	$(CXX_FOR_BUILD) $^ -o $@
+
+stub-%.dat: bintoc$(EXEEXT) stub-%.bin
+	./bintoc$(EXEEXT) $(basename $@).bin $@ $(subst -,_,$(basename $@))
 
 stub-%.bin: stub-%.elf
 	$(OBJCOPY_FOR_TARGET) -Obinary $< $@
@@ -78,4 +85,4 @@ yaki-h8$(EXEEXT): yaki-h8.o serial.o
 	$(CXX) -c $^ -o$@ $(DEF_COMMON_CFLAGS) $(DEF_CFLAGS) $(CFLAGS) $(DEF_COMMON_CXXFLAGS) $(DEF_CXXFLAGS) $(CXXFLAGS)
 
 clean:
-	rm -f stub-tiny.bin stub-tiny.elf stub-tiny.o stub-tiny-bin.o yaki-h8$(EXEEXT) yaki-h8.o serial.o
+	rm -f stub-h8h8tiny.bin stub-h8tiny.elf stub-h8tiny.o stub-h8tiny.dat yaki-h8$(EXEEXT) yaki-h8.o serial.o bintoc$(EXEEXT)

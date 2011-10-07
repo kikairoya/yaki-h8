@@ -3,6 +3,8 @@
 #include <stdexcept>
 #include <algorithm>
 
+void msleep(unsigned msec);
+
 class serial {
 public:
 	serial(const std::string &name, int speed = -1);

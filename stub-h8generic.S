@@ -113,7 +113,17 @@ _main:
 	bsr	_usleep_400:16
 	mov.b	r1h, @SCR3:8
 	bsr	_usleep_400:16
+_chgspeed:
 	mov.b	#'S', r2l
+	mov.b	r2l, @TDR:8
+	bsr	_usleep_400:16
+	btst	SSR_RDRF
+	beq	_chgspeed
+	mov.b	@RDR:8, r2l
+	cmp.b	#'s', r2l
+	bne	_chgspeed
+	loop(beq, btst) SSR_TDRE
+	mov.b	#'T', r2l
 	mov.b	r2l, @TDR:8
 
 	; er0: temporary
