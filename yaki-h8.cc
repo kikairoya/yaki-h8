@@ -1,151 +1,111 @@
 #include <vector>
-#include <iostream>
+#include <boost/spirit/include/qi.hpp>
+#include <boost/spirit/include/phoenix.hpp>
+
+namespace qi = boost::spirit::qi;
+namespace phx = boost::phoenix;
+
+template <typename Container, typename Iter>
+struct srec_parser: qi::grammar<Iter, Container()> {
+	srec_parser(): srec_parser::base_type(start) {
+		start = qi::no_skip[lines];
+		// _a: address length of this line
+		// _b: data length of this line
+		// _c: start address of this line
+		// _d: data of this line
+		// _e: line doesn't contain data
+		lines = *('S'
+			> qi::digit[
+				phx::switch_(qi::_1) [
+					phx::case_<'3'>(qi::_a = 4),
+					phx::case_<'7'>(qi::_a = 4),
+					phx::case_<'2'>(qi::_a = 3),
+					phx::case_<'8'>(qi::_a = 3),
+					phx::default_(qi::_a = 2)
+				],
+				phx::switch_(qi::_1) [
+					phx::case_<'1'>(qi::_e = false),
+					phx::case_<'2'>(qi::_e = false),
+					phx::case_<'3'>(qi::_e = false),
+					phx::default_(qi::_e = true)
+				]
+			  ]
+			> hex_byte[qi::_b = qi::_1 - qi::_a - 1]
+			> qi::eps[qi::_c = 0] > qi::repeat(qi::_a)[hex_byte[qi::_c = (qi::_c << 8) | qi::_1]]
+			> qi::eps[phx::clear(qi::_d)] > qi::repeat(qi::_b)[hex_byte[phx::push_back(qi::_d, qi::_1)]]
+			> hex_byte[
+				qi::_pass = qi::_1 == (0xFF & ~phx::accumulate(qi::_d, (qi::_c>>24) + (qi::_c>>16) + (qi::_c>>8) + qi::_c + qi::_b + qi::_a + 1)),
+				if_(!qi::_e) [
+					phx::resize(qi::_val, qi::_b+qi::_c),
+					phx::for_(qi::_b = 0, qi::_b < phx::size(qi::_d), ++qi::_b) [
+						qi::_val[qi::_b+qi::_c] = qi::_d[qi::_b]
+					]
+				]
+			  ]
+			> +qi::eol);
+		hex_byte = qi::uint_parser<unsigned, 16, 2, 2>();
+		qi::on_error<qi::fail>
+		(
+            lines
+          , std::cout
+			<< phx::val("Error! Expecting ")
+			<< qi::_4                               // what failed?
+			<< phx::val(" here: \"")
+			<< phx::construct<std::string>(qi::_3, qi::_2)   // iterators to error-pos, end
+			<< phx::val("\"")
+                << std::endl
+        );	}
+	qi::rule<Iter, Container()> start;
+	qi::rule<Iter, Container(), qi::locals<unsigned, unsigned, std::size_t, std::vector<unsigned char>, bool> > lines;
+	qi::rule<Iter, unsigned char()> hex_byte;
+};
+
+template <typename Container, typename Iter>
+Container parse_srec(Iter &first, Iter last) {
+	Container c;
+	qi::parse(first, last, srec_parser<Container, Iter>(), c);
+	return c;
+}
+
+template <typename Container, typename Input>
+Container parse_srec(const Input &in) {
+	typename Input::const_iterator ite = in.begin();
+	typename Input::const_iterator end = in.end();
+	return parse_srec<Container>(ite, end);
+}
+
+#include <boost/asio.hpp>
+
+namespace asio = boost::asio;
+
+
+#include <string>
 #include <fstream>
-#include <stdexcept>
-#include <algorithm>
-#include <memory>
-#include <sstream>
 #include <iterator>
-#include <cstring>
-#include <iomanip>
-#include <map>
-#include <array>
-#include <cmath>
-
-#define GNUC_VER ((__GNUC__*10000L) + (__GNUC_MINOR__*100L) + (__GNUC_PATCHLEVEL__*1L))
-
-#ifdef _MSC_VER
-#if _MSC_VER >= 1600
-// VC2010+ has nullptr
-#define HAS_NATIVE_NULLPTR
-#endif
-#endif
-
-#ifdef __GNUC__
-#if (GNUC_VER >= 40600) && defined(__GXX_EXPERIMENTAL_CXX0X__)
-// GCC 4.6+ with -std=c++0x has nullptr
-#define HAS_NATIVE_NULLPTR
-#endif
-#endif
-
-
-#ifndef HAS_NATIVE_NULLPTR
-const class nullptr_t {
-public:
-	template<class T>
-	operator T *() const { return 0; }
-	template<class C, class T>
-	operator T C::*() const { return 0; }
-private:
-	void operator &() const;
-} nullptr = {};
-#endif
-
-template <typename charT, typename T, class Traits = std::char_traits<charT>, class Alloc = std::allocator<charT> >
-inline std::basic_string<charT, Traits, Alloc> to_string(const T &val) {
-	std::basic_stringstream<charT, Traits, Alloc> ss;
-	ss << val;
-	return ss.str();
-}
-
-
-struct s_record_line {
-	enum record_type_t {
-		header_record=0,
-		data_16bit_addr=1,
-		data_24bit_addr=2,
-		data_32bit_addr=3,
-		//invalid_record_4=4,
-		data_left_count=5,
-		//invalid_record_6=6,
-		entry_32bit_addr=7,
-		entry_24bit_addr=8,
-		entry_16bit_addr=9
-	} record_type;
-	unsigned char byte_count;
-	unsigned long load_addr;
-	std::vector<unsigned char> data;
-	unsigned char checksum;
-};
-class stream_is_not_srec: public std::runtime_error {
-public:
-	stream_is_not_srec(): std::runtime_error("stream is not SREC (not found 'S')") { }
-};
-class unknown_record_type: public std::runtime_error {
-public:
-	unknown_record_type(int c): std::runtime_error("unknown record type "+to_string<char>(c)) { }
-};
-template <typename charT>
-unsigned long basic_strhextoul(charT *s);
-template <>
-unsigned long basic_strhextoul<char>(char *s) { return strtoul(s, 0, 16); }
-template <>
-unsigned long basic_strhextoul<wchar_t>(wchar_t *s) { return wcstoul(s, 0, 16); }
-template <unsigned Bytes, typename retT, typename charT, class Traits>
-retT get_hex_Nbyte(std::basic_istream<charT, Traits> &is) {
-	charT r[Bytes*2+1];
-	is.read(r, Bytes*2);
-	r[Bytes*2] = 0;
-	return static_cast<retT>(basic_strhextoul(r));
-}
-template <typename charT, class Traits>
-std::basic_istream<charT, Traits> &operator >>(std::basic_istream<charT, Traits> &is, s_record_line &line) {
-	std::ios_base::iostate err = std::ios_base::goodbit;
-	try {
-		typename std::basic_istream<charT, Traits>::sentry ipfx(is);
-		if (ipfx) {
-			s_record_line l;
-			if (is.get()!=is.widen('S')) throw stream_is_not_srec();
-			switch (int c = (is.get()-is.widen('0'))) {
-			case 0: l.record_type = s_record_line::header_record; break;
-			case 1: l.record_type = s_record_line::data_16bit_addr; break;
-			case 2: l.record_type = s_record_line::data_24bit_addr; break;
-			case 3: l.record_type = s_record_line::data_32bit_addr; break;
-			case 4: throw unknown_record_type(c+is.widen('0'));
-			case 5: l.record_type = s_record_line::data_left_count; break;
-			case 6: throw unknown_record_type(c+is.widen('0'));
-			case 7: l.record_type = s_record_line::entry_32bit_addr; break;
-			case 8: l.record_type = s_record_line::entry_24bit_addr; break;
-			case 9: l.record_type = s_record_line::entry_16bit_addr; break;
-			default: throw unknown_record_type(c+is.widen('0'));
-			}
-			int bc = l.byte_count = get_hex_Nbyte<1, unsigned>(is);
-			switch (l.record_type) {
-			case s_record_line::header_record:
-			case s_record_line::data_16bit_addr:
-			case s_record_line::data_left_count:
-			case s_record_line::entry_16bit_addr:
-				bc -= 2;
-				l.load_addr = get_hex_Nbyte<2, unsigned long>(is);
-				break;
-			case s_record_line::data_24bit_addr:
-			case s_record_line::entry_24bit_addr:
-				bc -= 3;
-				l.load_addr = get_hex_Nbyte<3, unsigned long>(is);
-				break;
-			case s_record_line::data_32bit_addr:
-			case s_record_line::entry_32bit_addr:
-				bc -= 4;
-				l.load_addr = get_hex_Nbyte<4, unsigned long>(is);
-				break;
-			}
-			for (int n=0; n<bc-1; ++n) l.data.push_back(get_hex_Nbyte<1, unsigned>(is));
-			l.checksum = get_hex_Nbyte<1, unsigned>(is);
-			line = l;
-		}
-	} catch (...) {
-		bool f = false;
-		try { is.setstate(std::ios_base::failbit); }
-		catch (std::ios_base::failure) { f = true; }
-		if (f) throw;
-	}
-	if (err!=std::ios_base::goodbit) is.setstate(err);
-	return is;
-}
-
-#include "serial.hpp"
+#include <vector>
+#include <deque>
+#include <boost/exception/all.hpp>
+#include <boost/lexical_cast.hpp>
+#include <boost/format.hpp>
 
 using namespace std;
+using boost::system::error_code;
+using boost::format;
+
+inline string get_option_arg(int &argc, char **&argv) {
+	if (strlen(*argv)==2) {
+		if (--argc) return string(*++argv);
+		++argv;
+		return string();
+	}
+	return string((*argv)+2);
+}
+
+inline void require(unsigned char val, unsigned char ex) {
+	if (val == ex) return;
+	cerr << (format("invalid response '0x%02X'(should be 0x%02X\n") % (unsigned)val % (unsigned)ex);
+	throw runtime_error("unexpected respoonse");
+}
 
 void help() {
 	cerr << "usage: yaki-h8 [opts...] {file}\n";
@@ -156,95 +116,34 @@ void help() {
 	cerr << "  -s BAUDRATE  specify initial hand-shake speed\n";
 	cerr << "  -c CLOCK     specify target system clock freq\n";
 	cerr << "  -t BAUDRATE  specify data transfer speed\n";
+	cerr << "  -l TYPE      specify target type\n";
 	cerr << "  -h           print this message\n";
 }
-string get_option_arg(int &argc, char **&argv) {
-	if (strlen(*argv)==2) {
-		if (--argc) return string(*++argv);
-		++argv;
-		return string();
-	}
-	return string((*argv)+2);
-}
-int check_error(unsigned char c, unsigned char expect) {
-	if (c!=expect) {
-		stringstream ss;
-		ss << "invalid response '0x";
-		ss << hex << setw(2) << setprecision(2) << setfill('0') << uppercase << (c&0xFF);
-		ss << "' (should be ";
-		ss << hex << setw(2) << setprecision(2) << setfill('0') << uppercase << (expect&0xFF);
-		ss << ")\n";
-		cerr << ss.str();
-		return 1;
-	}
-	return 0;
-}
 
-#include "stub-h8tiny.dat"
+#include "stub-h8tiny.h"
 
-vector<unsigned char> load_loader(const string &loader_file) {
+inline vector<unsigned char> load_loader(const string &loader_file) {
 	if (loader_file == "tiny") return vector<unsigned char>(stub_h8tiny, stub_h8tiny+sizeof(stub_h8tiny));
 	throw runtime_error("cant find stub <" + loader_file + ">");
-	ifstream f(("stub-"+loader_file+".bin").c_str(), ios::binary);
-	if (!f.is_open()) throw runtime_error("can't open stub file <" + loader_file + ">");
-	f.seekg(0, ios::end);
-	const auto len = f.tellg();
-	vector<unsigned char> r(len, 0);
-	f.seekg(0, ios::beg);
-	f.read(reinterpret_cast<char *>(&r[0]), len);
-	cout << " stub-" << loader_file << ".bin(" << r.size() << "B)" << flush;
+}
+
+inline std::vector<unsigned char> read_file(const string &file) {
+	std::ifstream f(file);
+	f.seekg(0, std::ios_base::end);
+	std::vector<unsigned char> r(f.tellg());
+	f.seekg(0, std::ios_base::beg);
+	f.read((char *)&r[0], r.size());
 	return r;
 }
 
-uint32_t load_srec(const string &name, vector<s_record_line> &srec) {
-	ifstream ifs(name.c_str());
-	if (!ifs.is_open()) throw runtime_error("can't open rom file <" + name + ">");
-	uint32_t last = 0;
-	while (ifs) {
-		s_record_line line;
-		ifs >> line;
-		last = max<uint32_t>(last, line.load_addr+line.data.size());
-		srec.push_back(move(line));
-	}
-	last += 0xFF;
-	last &=~0xFF;
-	return last;
-}
-
-struct copy_srec_line {
-	copy_srec_line(vector<unsigned char> &romdata): romdata(romdata) { }
-	void operator ()(const s_record_line &line) {
-		switch (line.record_type) {
-		case s_record_line::header_record:
-			cout << "file: " << string(line.data.cbegin(), line.data.cend()) << " (" << romdata.size()/1024 << "KiB)"<< endl;
-			break;
-		case s_record_line::data_16bit_addr:
-		case s_record_line::data_24bit_addr:
-		case s_record_line::data_32bit_addr:
-			copy(line.data.cbegin(), line.data.cend(), romdata.begin()+line.load_addr);
-			break;
-		default:
-			break;
-		}
-	}
-	vector<unsigned char> &romdata;
-};
-
-vector<unsigned char> load_romimage(const string &mot_name) {
-	vector<s_record_line> srec;
-	const auto last_addr = load_srec(mot_name, srec);
-	vector<unsigned char> romdata(last_addr, 0xFF);
-	for_each(srec.cbegin(), srec.cend(), copy_srec_line(romdata));
-	return romdata;
-}
-
-int main(int argc, char **argv) try {
+int main(int argc, char **argv) {
 	string mot_name;
 	string port_name("COM1");
 	string loader_file;
 	int init_speed = 9600;
 	int alt_speed = 0;
 	double target_clock = 20.0;
+
 	while (--argc) {
 		string arg(*++argv);
 		if (arg.empty()) continue;
@@ -257,16 +156,16 @@ int main(int argc, char **argv) try {
 				switch (arg[1]) {
 				case 'h': help(); continue;
 				case 'p': port_name = get_option_arg(argc, argv); continue;
-				case 's': init_speed = strtoul(get_option_arg(argc, argv).c_str(), nullptr, 10); continue;
-				case 'c': target_clock = strtod(get_option_arg(argc, argv).c_str(), nullptr); continue;
-				case 't': alt_speed = strtoul(get_option_arg(argc, argv).c_str(), nullptr, 10); continue;
+				case 's': init_speed = boost::lexical_cast<int>(get_option_arg(argc, argv)); continue;
+				case 'c': target_clock = boost::lexical_cast<double>(get_option_arg(argc, argv)); continue;
+				case 't': alt_speed = boost::lexical_cast<int>(get_option_arg(argc, argv)); continue;
 				case 'l': loader_file = get_option_arg(argc, argv); continue;
 				}
 			}
 			cerr << "unknown option: '" << arg << "'\n";
 			continue;
 		}
-		if (mot_name.empty()) mot_name = move(arg);
+		if (mot_name.empty()) mot_name = std::move(arg);
 		else cerr << "multiple target files. ignored.\n";
 	}
 	if (mot_name.empty()) {
@@ -274,86 +173,99 @@ int main(int argc, char **argv) try {
 		return 1;
 	}
 
+	asio::io_service serv;
+	asio::serial_port ser(serv, port_name);
+	ser.set_option(asio::serial_port::baud_rate(init_speed));
+	ser.set_option(asio::serial_port::flow_control());
+	ser.set_option(asio::serial_port::parity());
+	ser.set_option(asio::serial_port::stop_bits());
+	ser.set_option(asio::serial_port::character_size());
 
-	serial ser(port_name, init_speed);
-	const vector<unsigned char> romdata(load_romimage(mot_name.c_str()));
+	const auto sendb = [&ser](unsigned char b) {
+		asio::write(ser, asio::buffer(&b, 1));
+	};
+	const auto sendw = [&ser](uint16_t w) {
+		const unsigned char a[] = { (unsigned char)(w>>8), (unsigned char)w };
+		asio::write(ser, asio::buffer(a));
+	};
+	const auto sendl = [&ser](uint32_t l) {
+		const unsigned char a[] = { (unsigned char)(l>>24), (unsigned char)(l>>16), (unsigned char)(l>>8), (unsigned char)(l) };
+		asio::write(ser, asio::buffer(a));
+	};
+	const auto recvb = [&ser]() -> unsigned char {
+		unsigned char c;
+		asio::read(ser, asio::buffer(&c, 1));
+		return c;
+	};
+
+	auto romdata(parse_srec<deque<unsigned char>>(read_file(mot_name)));
+	romdata.resize(((romdata.size()-1)|0x000000FF)+1, 0xFF);
+
 	{
 		cout << "synchronizing" << flush;
+		unsigned char c;
 		const array<unsigned char, 256> zeroes = {{}};
-		unsigned n;
-		const unsigned rep = static_cast<unsigned>(-1);
-		for (n=0; n<rep; ++n) {
+		bool synced = false;
+		asio::async_read(ser, asio::buffer(&c, 1), [&synced](error_code ec, size_t) { synced = true; });
+		for (unsigned n = 0; n < static_cast<unsigned>(-1) && !synced; ++n) {
 			cout << '.' << flush;
-			ser.write(zeroes.data(), sizeof(zeroes));
-			if (ser.readable()) break;
+			asio::async_write(ser, asio::buffer(zeroes), [](error_code ec, size_t) { });
+			serv.run_one();
 		}
-		if (n == rep) {
-			cerr << "not responce from target.\n";
+		ser.cancel();
+		if (!synced) {
+			cerr << "no responce from target.\n";
 			return 2;
 		}
-		if (const auto c = ser.read_value<char>()) {
-			cerr << "invalid response '0x" << hex << setw(2) << setprecision(2) << setfill('0') << uppercase << (unsigned)c << "' (should be 0x00)\n";
-			return 3;
-		}
+		require(c, 0x00);
 		cout << " done." << endl;
 	} {
 		cout << "erasing..." << flush;
-		ser.write_value<char>(0x55);
-		if (const int r = check_error(ser.read_value<char>(), 0xAA)) return r;
+		sendb(0x55);
+		unsigned char c;
+		while ((c=recvb()) == 0x00);
+		require(c, 0xAA);
 		cout << " done." << endl;
 	} {
-		cout << "sending stub file" << flush;
 		const vector<unsigned char> stub(load_loader(loader_file));
-		ser.write_value(ser.hton(static_cast<uint16_t>(stub.size())));
+		cout << "sending stub (" << stub.size() << "B) " << flush;
+		sendw(stub.size()&0xFFFF);
 		cout << '.' << flush;
-		ser.read_value<uint16_t>();
-		unsigned n = 0;
-		for_each(stub.cbegin(), stub.cend(), [&n, &ser](const unsigned char c) {
-			if (++n%16==0) cout << '.' << flush;
-			ser.write_value(c);
-			ser.read_value<unsigned char>();
-		});
-		if (const int r = check_error(ser.read_value<char>(), 0xAA)) return r;
+		recvb(); recvb();
+		for (unsigned n=0; n<stub.size(); ++n) {
+			if (n%16==0) cout << '.' << flush;
+			sendb(stub[n]);
+			recvb();
+		}
+		require(recvb(), 0xAA);
 		cout << "done." << endl;
 	} {
-		cout << "writing" << flush;
-		if (const int r = check_error(ser.read_value<char>(), 'B')) return r;
+		cout << "writing " << mot_name << " (" << (romdata.size()/1024) << "KiB) "<< flush;
+		require(recvb(), 'B');
 		cout << '.' << flush;
-
-		msleep(500);
 		const int baud = alt_speed ? alt_speed : init_speed;
-		ser.write_value(static_cast<unsigned char>(round(target_clock / 32 / baud * 1000000 - 1)));
-		msleep(500);
-		ser.set_speed(baud);
-		while (ser.read_value<char>() != 'S') ;
-		ser.write_value('s');
-
-		{
-			char c;
-			while ((c = ser.read_value<char>()) == 'S') ;
-			if (int r = check_error(c, 'T')) return r;
-		}
+		const unsigned char spdchr = static_cast<unsigned char>(round(target_clock / 32 / baud * 1000000 - 1));
+		sendb(spdchr);
+		require(recvb(), spdchr);
+		ser.set_option(asio::serial_port::baud_rate(baud));
+		while (recvb() != 'S');
+		do {
+			sendb('s');
+		} while (recvb() != 'T') ;
+		sendb('t');
 		cout << '.' << flush;
-		
-		const uint32_t m = romdata.size()>>8;
-		ser.write_value(ser.hton(m));
-		for (uint32_t n=0; n<m; ++n) {
-			if (int r = check_error(ser.read_value<char>(), 'A')) return r;
+		const uint16_t m = static_cast<uint16_t>(romdata.size()>>8);
+		sendw(m);
+		for (uint32_t n = 0; n < m; ++n) {
+			require(recvb(), 'A');
 			cout << '.' << flush;
-			ser.write(&romdata[n*256], 128);
-			if (int r = check_error(ser.read_value<char>(), 'A')) return r;
-			ser.write(&romdata[n*256+128], 128);
+			asio::write(ser, asio::buffer(&romdata[n*256], 128));
+			require(recvb(), 'A');
+			asio::write(ser, asio::buffer(&romdata[n*256+128], 128));
 		}
-		if (int r = check_error(ser.read_value<char>(), 'F')) return r;
+		require(recvb(), 'F');
 		cout << "done." << endl;
 	}
 	cout << "finish." << endl;
 	return 0;
-} catch (const exception &e) {
-	cerr << "fatal: " << e.what() << endl;
-	return 1;
-} catch (...) {
-	cerr << "fatal: unknown error" << endl;
-	return 1;
 }
-

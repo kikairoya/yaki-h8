@@ -79,8 +79,8 @@ stub-h8s.elf: stub-h8generic.S
 stub-h8stiny.elf: stub-h8generic.S
 	$(CC_FOR_TARGET) $^ -o$@ -Wa,--defsym,_ram=0xFB80 -ms -mn -mrelax -nostartfiles -nodefaultlibs -nostdlib
 
-yaki-h8$(EXEEXT): yaki-h8.o serial.o
-	$(LINK) $^ -o$@ $(DEF_COMMON_LINKFLAGS) $(DEF_LINKFLAGS) $(LINKFLAGS)
+yaki-h8$(EXEEXT): yaki-h8.o
+	$(LINK) $^ -o$@ $(DEF_COMMON_LINKFLAGS) $(DEF_LINKFLAGS) $(LINKFLAGS) -lboost_system -lboost_date_time
 %.o: %.cc
 	$(CXX) -c $^ -o$@ $(DEF_COMMON_CFLAGS) $(DEF_CFLAGS) $(CFLAGS) $(DEF_COMMON_CXXFLAGS) $(DEF_CXXFLAGS) $(CXXFLAGS)
 

@@ -100,58 +100,60 @@ _main:
 	or.b	#0x30, r1h
 	and.b	#0xCF, r1l
 	mov.b	r1h, @SCR3:8
+	mov.b	#'B', r0l
+	bsr	_sendc:16
+	bsr	_recvc:16
+	mov.b	r0l, r2l
+	bsr	_sendc:16
+	loop(bne, btst) SSR_TEND
 	bsr	_usleep_400:16
-	loop(bge, mov.b) @SSR:8, r2l
-	mov.b	#'B', r2l
-	mov.b	r2l, @TDR:8
-	loop(beq, btst) SSR_RDRF
-	mov.b	@RDR:8, r2l
 	bsr	_usleep_400:16
 	mov.b	r1l, @SCR3:8
-	bsr	_usleep_400:16
 	mov.b	r2l, @BRR:8
 	bsr	_usleep_400:16
-	mov.b	r1h, @SCR3:8
 	bsr	_usleep_400:16
-_chgspeed:
+	mov.b	r1h, @SCR3:8
+.chgspeed:
+	loop(bge, mov.b) @SSR:8, r2l
+	bsr	_usleep_400:16
+	bsr	_usleep_400:16
 	mov.b	#'S', r2l
 	mov.b	r2l, @TDR:8
-	bsr	_usleep_400:16
 	btst	SSR_RDRF
-	beq	_chgspeed
+	beq	.chgspeed
 	mov.b	@RDR:8, r2l
 	cmp.b	#'s', r2l
-	bne	_chgspeed
-	loop(beq, btst) SSR_TDRE
-	mov.b	#'T', r2l
-	mov.b	r2l, @TDR:8
+	bne	.chgspeed
+	mov.b	#'T', r0l
+	bsr	_sendc
+	mov.b	@SSR:8, r2l
+	and.b	#0xC7, r2l
+	mov.b	r2l, @SSR:8
+.chgspeed_fin:
+	bsr	_recvc
+	cmp.b	#'t', r0l
+	bne	.chgspeed_fin
 
 	; er0: temporary
 	; er1: wbuf
 	; er2: end
 	; er3: target
-	loop(beq, btst) SSR_RDRF
-	mov.b	@RDR:8, r2h
-	loop(beq, btst) SSR_RDRF
-	mov.b	@RDR:8, r2h
-	loop(beq, btst) SSR_RDRF
-	mov.b	@RDR:8, r2l
-	mov.w	r2, e2
-	loop(beq, btst) SSR_RDRF
-	mov.b	@RDR:8, r2h
-	sub.b	r2l, r2l
+	sub.l	er2, er2
+	sub.l	er0, er0
+	bsr	_recvc
+	mov.w	r0, e2
+	bsr	_recvc
+	mov.b	r0l, r2h
 
 	sub.l	er3, er3
 .main_loop:
-	loop(beq, btst) SSR_TDRE
 	mov.b	#'A', r0l
-	mov.b	r0l, @TDR:8
+	bsr	_sendc
 
 	mov.p	#_wbuf, r1
 	sub.b	r0h, r0h
 .recv_loop:
-	loop(beq, btst) SSR_RDRF
-	mov.b	@RDR:8, r0l
+	bsr	_recvc
 	mov.b	r0l, @er1
 	adds	#1, er1
 	inc.b	r0h
@@ -178,9 +180,18 @@ _chgspeed:
 .error:
 	mov.b	#'E', r0l
 .finish:
+	bsr	_sendc
+	loop(bra, nop)
+
+_recvc:
+	loop(beq, btst) SSR_RDRF
+	mov.b	@RDR:8, r0l
+	rts
+
+_sendc:
 	loop(beq, btst) SSR_TDRE
 	mov.b	r0l, @TDR:8
-	loop(bra, nop)
+	rts
 
 _usleep_400:
 	usleep	400, r0
