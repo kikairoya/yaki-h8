@@ -57,8 +57,8 @@ lib pthread ;
 lib zlib : : <name>z ;
 lib dl ;
 
-exe yaki-h8 :
-	yaki-h8.cc
+exe yaki-h8tiny :
+	yaki-h8tiny.cc
 	:
 	<library>boost_headers
 	<library>boost_program_options
