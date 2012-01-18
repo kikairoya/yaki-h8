@@ -85,4 +85,4 @@ yaki-h8$(EXEEXT): yaki-h8.o
 	$(CXX) -c $^ -o$@ $(DEF_COMMON_CFLAGS) $(DEF_CFLAGS) $(CFLAGS) $(DEF_COMMON_CXXFLAGS) $(DEF_CXXFLAGS) $(CXXFLAGS)
 
 clean:
-	rm -f stub-h8h8tiny.bin stub-h8tiny.elf stub-h8tiny.o stub-h8tiny.dat yaki-h8$(EXEEXT) yaki-h8.o serial.o bintoc$(EXEEXT)
+	rm -f stub-h8 h8tiny.bin stub-h8tiny.elf stub-h8tiny.o stub-h8tiny.dat yaki-h8$(EXEEXT) yaki-h8.o serial.o bintoc$(EXEEXT)
